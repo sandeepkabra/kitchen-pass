@@ -745,14 +745,36 @@
         <div class="choice-row" id="nt-structure-choices" style="margin-bottom:6px;">
           <button class="choice-pill active" data-structure="manual">Manual</button>
           <button class="choice-pill" data-structure="round-robin">Round robin</button>
+          <button class="choice-pill" data-structure="pools-playoffs">Pools + playoffs</button>
           <button class="choice-pill" data-structure="single-elim">Bracket</button>
+          <button class="choice-pill" data-structure="double-elim">Double elim</button>
         </div>
-        <p style="font-size:11.5px; color:var(--ink-faint); margin:0 0 14px;" id="nt-structure-hint">You'll schedule each match yourself. Flexible for anything.</p>
-        <p class="section-label">Play each match to</p>
-        <div class="choice-row" id="nt-target-choices" style="margin-bottom:18px;">
+        <p style="font-size:11.5px; color:var(--ink-faint); margin:0 0 10px;" id="nt-structure-hint">You'll schedule each match yourself. Flexible for anything.</p>
+        <div class="field-group" id="nt-qualify-wrap" style="display:none; margin-bottom:14px;">
+          <input type="number" id="nt-qualify-count" placeholder="Qualifiers per pool" min="1" max="8" value="2">
+        </div>
+        <p class="section-label">Match format</p>
+        <div class="choice-row" id="nt-matchformat-choices" style="margin-bottom:14px;">
+          <button class="choice-pill active" data-matchformat="single">Single game</button>
+          <button class="choice-pill" data-matchformat="best3">Best of 3</button>
+          <button class="choice-pill" data-matchformat="best5">Best of 5</button>
+        </div>
+        <p class="section-label">Play each game to</p>
+        <div class="choice-row" id="nt-target-choices" style="margin-bottom:10px;">
           <button class="choice-pill" data-target="11">11</button>
           <button class="choice-pill active" data-target="15">15</button>
           <button class="choice-pill" data-target="21">21</button>
+          <button class="choice-pill" data-target="custom">Custom</button>
+        </div>
+        <div class="field-group" id="nt-custom-target-wrap" style="display:none; margin-bottom:10px;">
+          <input type="number" id="nt-custom-target" placeholder="Points to win, e.g. 25" min="3" max="99">
+        </div>
+        <div class="toggle-row" style="margin-bottom:18px;">
+          <div class="toggle-text">
+            <div class="t-title">Win by 2</div>
+            <div class="t-sub">Off = sudden death, first to the target wins outright</div>
+          </div>
+          <button class="switch on" id="nt-winby2-switch"></button>
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" id="nt-cancel">Cancel</button>
@@ -1587,8 +1609,25 @@
     try{ duprRecord = await buildDuprRecord(game); }
     catch(e){ console.error("DUPR record build failed (non-blocking)", e); }
     game.lastDuprRecord = duprRecord;
+
+    var series = game.context && game.context.series;
+    if(series){
+      if(game.winner === "A") series.gamesA++; else series.gamesB++;
+      series.gameScores.push({ a: game.score.A, b: game.score.B, winner: game.winner });
+    }
+
     try{
       historyId = await saveGameToHistory(game, duprRecord);
+      if(series && series.gamesA < series.needWins && series.gamesB < series.needWins){
+        lastFinishRevert = { historyId: historyId, listKey: null };
+        renderSummary();
+        showScreen("screen-summary");
+        return;
+      }
+      if(series){
+        game.aggregateScore = { A: series.gamesA, B: series.gamesB };
+        game.aggregateWinner = series.gamesA > series.gamesB ? "A" : "B";
+      }
       revert = await applyContextResult(historyId, duprRecord);
     }catch(e){
       console.error("finishGame save error", e);
@@ -1645,16 +1684,32 @@
       var t = tlist[tidx];
       var mm = (t.matches || []).find(function(x){ return x.id === game.context.matchId; });
       if(!mm) return null;
+      var finalScoreA = game.aggregateScore ? game.aggregateScore.A : game.score.A;
+      var finalScoreB = game.aggregateScore ? game.aggregateScore.B : game.score.B;
+      var finalWinner = game.aggregateWinner || game.winner;
       mm.status = "completed";
-      mm.scoreA = game.score.A; mm.scoreB = game.score.B;
-      mm.winner = game.winner;
+      mm.scoreA = finalScoreA; mm.scoreB = finalScoreB;
+      mm.winner = finalWinner;
       mm.historyId = historyId;
       mm.serverStats = computeServerStats(game);
       mm.dupr = duprRecord || null;
+      if(game.context.series) mm.seriesScores = game.context.series.gameScores;
       if(mm.bracketRef && t.bracket && t.bracket.rounds[mm.bracketRef.round]){
         var bslot = t.bracket.rounds[mm.bracketRef.round][mm.bracketRef.slot];
         bslot.winner = (game.winner === "A") ? bslot.a : bslot.b;
         propagateBracketWinners(t.bracket.rounds);
+      }
+      if(mm.deRef){
+        if(mm.deRef.kind === "wb" && t.bracket && t.bracket.rounds[mm.deRef.round]){
+          var wslot = t.bracket.rounds[mm.deRef.round][mm.deRef.slot];
+          wslot.winner = (game.winner === "A") ? wslot.a : wslot.b;
+          propagateBracketWinners(t.bracket.rounds);
+        } else if(mm.deRef.kind === "lb" && t.doubleElim && t.doubleElim.lbRounds[mm.deRef.round]){
+          var lslot = t.doubleElim.lbRounds[mm.deRef.round][mm.deRef.slot];
+          lslot.winner = (game.winner === "A") ? lslot.a : lslot.b;
+        } else if(mm.deRef.kind === "gf" && t.doubleElim && t.doubleElim.grandFinal){
+          t.doubleElim.grandFinal.winner = (game.winner === "A") ? t.doubleElim.grandFinal.a : t.doubleElim.grandFinal.b;
+        }
       }
       await saveJSON(TOURNAMENTS_KEY, tlist);
       return { listKey: TOURNAMENTS_KEY, id: t.id, prevSnapshot: prevTSnapshot };
@@ -1904,9 +1959,22 @@
   }
 
   function renderSummary(){
-    var winnerObj = game.winner === "A" ? game.teamA : game.teamB;
-    document.getElementById("summary-winner").textContent = winnerObj.name + " wins";
-    document.getElementById("summary-score").textContent = game.score.A + "\u2013" + game.score.B;
+    var series = game.context && game.context.series;
+    var seriesOngoing = series && !game.aggregateWinner;
+    if(seriesOngoing){
+      var gameWinnerObj = game.winner === "A" ? game.teamA : game.teamB;
+      document.getElementById("summary-winner").textContent = "Game " + series.gameScores.length + " complete";
+      document.getElementById("summary-score").textContent = series.gamesA + "\u2013" + series.gamesB;
+      document.getElementById("summary-server-stats").innerHTML =
+        '<p style="text-align:center; color:var(--ink-soft); font-size:14px; margin:0 0 6px;">' + gameWinnerObj.name + ' won game ' + series.gameScores.length +
+        ' (' + game.score.A + '\u2013' + game.score.B + '). Series: ' + game.teamA.name + ' ' + series.gamesA + ' \u2013 ' + series.gamesB + ' ' + game.teamB.name + '.</p>';
+      document.getElementById("summary-dupr-status").innerHTML = "";
+      document.getElementById("summary-actions").innerHTML = '<button class="btn btn-primary" data-action="next-game">Start game ' + (series.gameScores.length + 1) + '</button>';
+      return;
+    }
+    var winnerObj = (game.aggregateWinner || game.winner) === "A" ? game.teamA : game.teamB;
+    document.getElementById("summary-winner").textContent = winnerObj.name + " wins" + (series ? " the series" : "");
+    document.getElementById("summary-score").textContent = series ? (series.gamesA + "\u2013" + series.gamesB) : (game.score.A + "\u2013" + game.score.B);
 
     var statsEl = document.getElementById("summary-server-stats");
     var entries = computeServerStats(game);
@@ -1973,6 +2041,11 @@
     else if(action === "history"){ renderHistory(); showScreen("screen-history"); }
     else if(action === "back-schedule"){ renderSchedule(); showScreen("screen-schedule"); }
     else if(action === "back-tournament"){ renderTournamentDetail(ctx.tournamentId); showScreen("screen-tournament-detail"); }
+    else if(action === "next-game"){
+      var series = ctx.series;
+      var nextContext = { type: "tournament", tournamentId: ctx.tournamentId, matchId: ctx.matchId, deRef: ctx.deRef, series: series };
+      startGame(game.teamA, game.teamB, game.mode, game.target, game.winBy2, nextContext);
+    }
   });
 
   /* ================================================================ */
@@ -2482,11 +2555,13 @@
   /* ================================================================ */
   var currentTournamentId = null;
   var currentTdSubtab = "teams";
-  var ntMode = "doubles", ntTarget = 15, ntStructure = "manual";
+  var ntMode = "doubles", ntTarget = 15, ntStructure = "manual", ntMatchFormat = "single", ntWinBy2 = true;
   var STRUCTURE_HINTS = {
     "manual": "You'll schedule each match yourself. Flexible for anything.",
     "round-robin": "Every pair plays every other pair once (or within their group, if you tag teams with groups). Points table ranks them automatically.",
-    "single-elim": "Seed your pairs, then a single-elimination bracket is generated \u2014 lose once and you're out."
+    "pools-playoffs": "Round robin within each group/pool, then top finishers auto-advance into a knockout bracket once pool play is done.",
+    "single-elim": "Seed your pairs, then a single-elimination bracket is generated \u2014 lose once and you're out.",
+    "double-elim": "Lose once and you drop to the losers bracket; lose twice and you're out. Winners- and losers-bracket champs meet in the grand final."
   };
 
   async function getProfile(){
@@ -2528,16 +2603,21 @@
   });
 
   document.getElementById("btn-new-tournament").addEventListener("click", async function(){
-    ["nt-name","nt-city","nt-ground","nt-organizer-name","nt-organizer-phone","nt-organizer-email","nt-start-date","nt-end-date"].forEach(function(id){
+    ["nt-name","nt-city","nt-ground","nt-organizer-name","nt-organizer-phone","nt-organizer-email","nt-start-date","nt-end-date","nt-custom-target"].forEach(function(id){
       document.getElementById(id).value = "";
     });
+    document.getElementById("nt-qualify-count").value = "2";
     var profile = await getProfile();
     if(profile.name) document.getElementById("nt-organizer-name").value = profile.name;
-    ntMode = "doubles"; ntTarget = 15; ntStructure = "manual";
+    ntMode = "doubles"; ntTarget = 15; ntStructure = "manual"; ntMatchFormat = "single"; ntWinBy2 = true;
     document.getElementById("nt-mode-segmented").querySelectorAll("button").forEach(function(b){ b.classList.toggle("active", b.dataset.mode === "doubles"); });
     document.getElementById("nt-target-choices").querySelectorAll("button").forEach(function(b){ b.classList.toggle("active", b.dataset.target === "15"); });
     document.getElementById("nt-structure-choices").querySelectorAll("button").forEach(function(b){ b.classList.toggle("active", b.dataset.structure === "manual"); });
+    document.getElementById("nt-matchformat-choices").querySelectorAll("button").forEach(function(b){ b.classList.toggle("active", b.dataset.matchformat === "single"); });
     document.getElementById("nt-structure-hint").textContent = STRUCTURE_HINTS.manual;
+    document.getElementById("nt-qualify-wrap").style.display = "none";
+    document.getElementById("nt-custom-target-wrap").style.display = "none";
+    document.getElementById("nt-winby2-switch").classList.add("on");
     document.getElementById("modal-new-tournament").classList.add("active");
   });
   document.getElementById("nt-cancel").addEventListener("click", function(){
@@ -2548,19 +2628,41 @@
     this.querySelectorAll("button").forEach(function(b){ b.classList.remove("active"); });
     btn.classList.add("active"); ntStructure = btn.dataset.structure;
     document.getElementById("nt-structure-hint").textContent = STRUCTURE_HINTS[ntStructure];
+    document.getElementById("nt-qualify-wrap").style.display = (ntStructure === "pools-playoffs") ? "block" : "none";
   });
   document.getElementById("nt-mode-segmented").addEventListener("click", function(e){
     var btn = e.target.closest("button"); if(!btn) return;
     this.querySelectorAll("button").forEach(function(b){ b.classList.remove("active"); });
     btn.classList.add("active"); ntMode = btn.dataset.mode;
   });
+  document.getElementById("nt-matchformat-choices").addEventListener("click", function(e){
+    var btn = e.target.closest("button"); if(!btn) return;
+    this.querySelectorAll("button").forEach(function(b){ b.classList.remove("active"); });
+    btn.classList.add("active"); ntMatchFormat = btn.dataset.matchformat;
+  });
   document.getElementById("nt-target-choices").addEventListener("click", function(e){
     var btn = e.target.closest("button"); if(!btn) return;
     this.querySelectorAll("button").forEach(function(b){ b.classList.remove("active"); });
-    btn.classList.add("active"); ntTarget = parseInt(btn.dataset.target, 10);
+    btn.classList.add("active");
+    if(btn.dataset.target === "custom"){
+      document.getElementById("nt-custom-target-wrap").style.display = "block";
+      ntTarget = null;
+    } else {
+      document.getElementById("nt-custom-target-wrap").style.display = "none";
+      ntTarget = parseInt(btn.dataset.target, 10);
+    }
+  });
+  document.getElementById("nt-winby2-switch").addEventListener("click", function(){
+    this.classList.toggle("on"); ntWinBy2 = this.classList.contains("on");
   });
   document.getElementById("nt-create").addEventListener("click", async function(){
     var name = document.getElementById("nt-name").value.trim() || "Untitled tournament";
+    var finalTarget = ntTarget;
+    if(finalTarget === null){
+      finalTarget = parseInt(document.getElementById("nt-custom-target").value, 10);
+      if(!finalTarget || finalTarget < 3){ showToast("Enter a valid custom point target (3 or higher)"); return; }
+    }
+    var qualifyPerPool = parseInt(document.getElementById("nt-qualify-count").value, 10) || 2;
     var t = {
       id: uid(), name: name,
       city: document.getElementById("nt-city").value.trim(),
@@ -2570,8 +2672,8 @@
       organizerEmail: document.getElementById("nt-organizer-email").value.trim(),
       startDate: document.getElementById("nt-start-date").value,
       endDate: document.getElementById("nt-end-date").value,
-      mode: ntMode, target: ntTarget, winBy2: true,
-      structure: ntStructure, seedOrder: null, bracket: null,
+      mode: ntMode, target: finalTarget, winBy2: ntWinBy2, matchFormat: ntMatchFormat,
+      structure: ntStructure, seedOrder: null, bracket: null, qualifyPerPool: qualifyPerPool,
       createdAt: new Date().toISOString(),
       teams: [], matches: []
     };
@@ -2746,9 +2848,12 @@
   function renderTdTeams(t){
     var body = document.getElementById("td-body");
     var slotCount = t.mode === "doubles" ? 2 : 1;
-    var html = '<button class="btn btn-secondary btn-sm" id="btn-add-team" style="margin-bottom:16px;">+ Add team</button>';
+    var html = '<div class="btn-row" style="margin-bottom:16px;">' +
+      '<button class="btn btn-secondary btn-sm" id="btn-add-team" style="flex:1;">+ Add team</button>' +
+      '<button class="btn btn-secondary btn-sm" id="btn-add-pair-direct" style="flex:1;">+ Add ' + (slotCount === 2 ? "pair" : "player") + ' directly</button>' +
+    '</div>';
     if(t.teams.length === 0){
-      html += '<div class="empty-state"><p>No teams yet. Add a team, then add pairs to it.</p></div>';
+      html += '<div class="empty-state"><p>No teams yet. Add a team and its pairs, or use "Add ' + (slotCount === 2 ? "pair" : "player") + ' directly" to skip naming a team \u2014 each one gets its own auto-named entry.</p></div>';
     }
     t.teams.forEach(function(team){
       html += '<div class="team-card" data-team="' + team.id + '">' +
@@ -2774,6 +2879,7 @@
     body.innerHTML = html;
 
     document.getElementById("btn-add-team").addEventListener("click", function(){ openTeamForm(null); });
+    document.getElementById("btn-add-pair-direct").addEventListener("click", function(){ openPairForm(null, null); });
     body.querySelectorAll("[data-edit-team]").forEach(function(btn){
       btn.addEventListener("click", function(){ openTeamForm(findTeam(t, btn.dataset.editTeam)); });
     });
@@ -2878,12 +2984,17 @@
     var slotCount = t.mode === "doubles" ? 2 : 1;
     var players = [p1];
     if(slotCount === 2) players.push(document.getElementById("pfr-p2").value.trim() || "Partner");
-    var team = findTeam(t, editingPairTeamId);
-    if(editingPairId){
-      var pair = team.pairs.find(function(p){ return p.id === editingPairId; });
-      pair.players = players;
+    if(editingPairTeamId === null){
+      // Direct add: no team chosen, so wrap this one pair in its own auto-named team.
+      t.teams.push({ id: uid(), name: players.join(" & "), group: "", pairs: [{ id: uid(), players: players }] });
     } else {
-      team.pairs.push({ id: uid(), players: players });
+      var team = findTeam(t, editingPairTeamId);
+      if(editingPairId){
+        var pair = team.pairs.find(function(p){ return p.id === editingPairId; });
+        pair.players = players;
+      } else {
+        team.pairs.push({ id: uid(), players: players });
+      }
     }
     await saveJSON(TOURNAMENTS_KEY, list);
     document.getElementById("modal-pair-form").classList.remove("active");
@@ -2897,6 +3008,12 @@
       (team.pairs || []).forEach(function(pair){ out.push({ teamId: team.id, teamName: team.name, pairId: pair.id, pair: pair }); });
     });
     return out;
+  }
+
+  function makeSeriesContext(t){
+    if(t.matchFormat === "best3") return { needWins: 2, gamesA: 0, gamesB: 0, gameScores: [] };
+    if(t.matchFormat === "best5") return { needWins: 3, gamesA: 0, gamesB: 0, gameScores: [] };
+    return null;
   }
 
   function buildMatchRecord(t, teamAId, pairAId, teamBId, pairBId, datetime, court){
@@ -2988,8 +3105,31 @@
     }
   }
 
+  function computePlayoffSeeding(t, qualifyCount){
+    var pairRows = computePairStandings(t);
+    var pools = {};
+    pairRows.forEach(function(p){ var g = p.group || ""; if(!pools[g]) pools[g] = []; pools[g].push(p); });
+    var poolKeys = Object.keys(pools).sort();
+    poolKeys.forEach(function(g){
+      pools[g].sort(function(a, b){
+        if(b.pts !== a.pts) return b.pts - a.pts;
+        var nrrA = a.mp ? (a.pf - a.pa) / a.mp : 0, nrrB = b.mp ? (b.pf - b.pa) / b.mp : 0;
+        return nrrB - nrrA;
+      });
+    });
+    var seeded = [];
+    for(var rank = 0; rank < qualifyCount; rank++){
+      poolKeys.forEach(function(g){
+        if(pools[g][rank]) seeded.push(pools[g][rank].id);
+      });
+    }
+    return seeded;
+  }
+
   function renderTdSchedule(t){
     if(t.structure === "single-elim"){ renderTdBracket(t); return; }
+    if(t.structure === "double-elim"){ renderTdDoubleElim(t); return; }
+    if(t.structure === "pools-playoffs" && t.bracket){ renderTdBracket(t); return; }
     var body = document.getElementById("td-body");
     var matches = t.matches || [];
     var upcoming = matches.filter(function(m){ return m.status === "upcoming"; }).sort(function(a,b){ return (a.datetime||"").localeCompare(b.datetime||""); });
@@ -2997,9 +3137,20 @@
 
     var canSchedule = allPairs(t).length >= 2;
     var html = "";
-    if(t.structure === "round-robin" && matches.length === 0){
-      html += '<button class="btn btn-primary btn-sm" id="btn-gen-rr" style="margin-bottom:10px;" ' + (canSchedule ? "" : "disabled") + '>Generate round-robin fixtures</button>';
-      html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:-4px 0 16px;">Creates every pairing once (within groups, if you\u2019ve tagged teams). You can still add matches manually below.</p>';
+    if((t.structure === "round-robin" || t.structure === "pools-playoffs") && matches.length === 0){
+      var label = t.structure === "pools-playoffs" ? "Generate pool fixtures" : "Generate round-robin fixtures";
+      html += '<button class="btn btn-primary btn-sm" id="btn-gen-rr" style="margin-bottom:10px;" ' + (canSchedule ? "" : "disabled") + '>' + label + '</button>';
+      html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:-4px 0 16px;">Creates every pairing once' + (t.structure === "pools-playoffs" ? " within each group/pool" : " (within groups, if you\u2019ve tagged teams)") + '. You can still add matches manually below.</p>';
+    }
+    if(t.structure === "pools-playoffs" && matches.length > 0){
+      var allPoolDone = matches.every(function(m){ return m.status === "completed"; });
+      if(allPoolDone){
+        html += '<div class="mystats-card" style="padding:16px;"><div class="mystats-title">Pool play complete</div>' +
+          '<p style="font-size:13px; color:var(--ink-soft); margin:4px 0 12px;">Top ' + (t.qualifyPerPool || 2) + ' pair(s) per pool advance to the playoff bracket.</p>' +
+          '<button class="btn btn-primary btn-sm" id="btn-gen-playoffs">Generate playoffs</button></div>';
+      } else {
+        html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:0 0 16px;">Finish every pool match to unlock the playoff bracket.</p>';
+      }
     }
     html += '<button class="btn btn-secondary btn-sm" id="btn-add-match" style="margin-bottom:16px;" ' + (canSchedule ? "" : "disabled") + '>+ Schedule match</button>';
     if(!canSchedule) html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:-10px 0 16px;">Add at least 2 pairs across your teams first.</p>';
@@ -3028,6 +3179,18 @@
       showToast(newMatches.length + " fixture" + (newMatches.length === 1 ? "" : "s") + " created");
       renderTournamentDetail(t.id);
     });
+    var genPlayoffsBtn = document.getElementById("btn-gen-playoffs");
+    if(genPlayoffsBtn) genPlayoffsBtn.addEventListener("click", async function(){
+      var seedOrder = computePlayoffSeeding(t, t.qualifyPerPool || 2);
+      if(seedOrder.length < 2){ showToast("Not enough qualifiers to build a bracket"); return; }
+      var list = await loadJSON(TOURNAMENTS_KEY, []);
+      var tt = list.find(function(x){ return x.id === t.id; });
+      tt.seedOrder = seedOrder;
+      tt.bracket = { rounds: buildBracketRounds(seedOrder) };
+      await saveJSON(TOURNAMENTS_KEY, list);
+      showToast("Playoff bracket generated");
+      renderTournamentDetail(t.id);
+    });
     var addBtn = document.getElementById("btn-add-match");
     if(addBtn) addBtn.addEventListener("click", function(){ openMatchForm(t, null); });
     body.querySelectorAll("[data-start-match]").forEach(function(btn){
@@ -3036,7 +3199,7 @@
         startGame(
           { name: m.teamAPairLabel, players: m.teamAPlayers }, { name: m.teamBPairLabel, players: m.teamBPlayers },
           t.mode, t.target, t.winBy2,
-          { type: "tournament", tournamentId: t.id, matchId: m.id }
+          { type: "tournament", tournamentId: t.id, matchId: m.id, series: makeSeriesContext(t) }
         );
       });
     });
@@ -3130,6 +3293,7 @@
         var tt = list.find(function(x){ return x.id === t.id; });
         tt.seedOrder = t.seedOrder;
         tt.bracket = { rounds: buildBracketRounds(t.seedOrder) };
+        if(t.structure === "double-elim") tt.doubleElim = { lbRounds: [], grandFinal: null };
         await saveJSON(TOURNAMENTS_KEY, list);
         renderTournamentDetail(t.id);
       });
@@ -3201,7 +3365,7 @@
           { name: entryA.pair.players.join(" & "), players: entryA.pair.players },
           { name: entryB.pair.players.join(" & "), players: entryB.pair.players },
           t.mode, t.target, t.winBy2,
-          { type: "tournament", tournamentId: t.id, matchId: match.id }
+          { type: "tournament", tournamentId: t.id, matchId: match.id, series: makeSeriesContext(t) }
         );
       });
     });
@@ -3213,6 +3377,224 @@
     tt.seedOrder = t.seedOrder;
     await saveJSON(TOURNAMENTS_KEY, list);
     renderTournamentDetail(t.id);
+  }
+
+  /* ---- Double elimination ---- */
+  function deWbChampion(t){
+    var lastWb = t.bracket.rounds[t.bracket.rounds.length - 1];
+    if(lastWb.length !== 1 || lastWb[0].winner === null || lastWb[0].winner === undefined) return null;
+    return t.seedOrder[lastWb[0].winner];
+  }
+  function deCollectFreshWbLosers(t){
+    var placed = {};
+    (t.doubleElim.lbRounds || []).forEach(function(round){
+      round.forEach(function(m){ if(m.a !== null) placed[m.a] = true; if(m.b !== null) placed[m.b] = true; });
+    });
+    var losers = [];
+    t.bracket.rounds.forEach(function(round){
+      round.forEach(function(m){
+        if(!m.bye && m.winner !== null && m.winner !== undefined){
+          var loserSeed = (m.winner === m.a) ? m.b : m.a;
+          var loserPairId = t.seedOrder[loserSeed];
+          if(!placed[loserPairId]) losers.push(loserPairId);
+        }
+      });
+    });
+    return losers;
+  }
+  function deLbSurvivorsFromLastRound(t){
+    var rounds = t.doubleElim.lbRounds;
+    if(!rounds.length) return [];
+    var last = rounds[rounds.length - 1];
+    var placedLater = false; // last round is by definition not yet consumed by a later round
+    var survivors = [];
+    last.forEach(function(m){ if(m.winner !== null && m.winner !== undefined) survivors.push(m.winner); });
+    return survivors;
+  }
+  function deLastLbRoundComplete(t){
+    var rounds = t.doubleElim.lbRounds;
+    if(!rounds.length) return true;
+    var last = rounds[rounds.length - 1];
+    return last.every(function(m){ return m.bye || (m.winner !== null && m.winner !== undefined); });
+  }
+  function deLbChampion(t){
+    var rounds = t.doubleElim.lbRounds;
+    if(!rounds.length) return null;
+    var last = rounds[rounds.length - 1];
+    var freshLeft = deCollectFreshWbLosers(t).length;
+    if(last.length === 1 && (last[0].winner !== null && last[0].winner !== undefined) && freshLeft === 0) return last[0].winner;
+    return null;
+  }
+
+  function renderTdDoubleElim(t){
+    if(!t.bracket){ renderTdBracket(t); return; }
+    var body = document.getElementById("td-body");
+    t.doubleElim = t.doubleElim || { lbRounds: [], grandFinal: null };
+    var entries = allPairs(t);
+    var wbChamp = deWbChampion(t);
+    var lbChamp = deLbChampion(t);
+    var gf = t.doubleElim.grandFinal;
+
+    var html = '<p class="page-sub">Simplified double elimination: lose in the winners bracket and you drop to the losers bracket; lose there and you\u2019re out. Losers-bracket rounds are generated as you go, rather than a rigid pre-set schedule.</p>';
+    html += '<button class="btn btn-ghost btn-sm" id="btn-reseed-de" style="margin-bottom:14px;">\u21ba Redo seeding</button>';
+
+    if(gf && gf.winner !== null && gf.winner !== undefined){
+      html += '<p class="page-sub" style="color:var(--court-teal-dark); font-weight:600;">\ud83c\udfc6 ' + entryNameByPairId(t, gf.winner) + ' won the tournament</p>';
+    }
+
+    // Winners bracket
+    html += '<p class="section-label">Winners bracket</p>';
+    t.bracket.rounds.forEach(function(round, ri){
+      html += '<div class="bracket-round"><p class="bracket-round-title">' + (ri === t.bracket.rounds.length - 1 ? "WB Final" : "WB Round " + (ri + 1)) + '</p>';
+      round.forEach(function(m, mi){
+        var playable = !m.bye && m.a !== null && m.b !== null && m.winner === null;
+        var played = m.winner !== null && !m.bye;
+        var matchRecord = m.matchId ? (t.matches || []).find(function(x){ return x.id === m.matchId; }) : null;
+        html += '<div class="bracket-match ' + (playable ? "" : "disabled") + '" data-wb-round="' + ri + '" data-wb-match="' + mi + '" data-playable="' + playable + '">';
+        html += '<div class="bracket-slot ' + (m.winner === m.a && m.a !== null ? "winner" : "") + '"><span>' + bracketEntryName(t, m.a) + '</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreA + '</span>' : '') + '</div>';
+        html += '<div class="bracket-divider"></div>';
+        html += '<div class="bracket-slot ' + (m.winner === m.b && m.b !== null ? "winner" : "") + '"><span>' + bracketEntryName(t, m.b) + '</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreB + '</span>' : '') + '</div>';
+        if(playable) html += '<div class="bracket-tap-hint">Tap to score this match</div>';
+        else if(m.bye) html += '<div class="bracket-tap-hint" style="color:var(--ink-faint);">Bye</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+
+    // Losers bracket
+    html += '<p class="section-label" style="margin-top:22px;">Losers bracket</p>';
+    if(t.doubleElim.lbRounds.length === 0){
+      html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:0 0 12px;">Fills in as winners-bracket matches are played.</p>';
+    }
+    t.doubleElim.lbRounds.forEach(function(round, ri){
+      html += '<div class="bracket-round"><p class="bracket-round-title">LB Round ' + (ri + 1) + '</p>';
+      round.forEach(function(m, mi){
+        var playable = !m.bye && m.a !== null && m.b !== null && m.winner === null;
+        var played = m.winner !== null && !m.bye;
+        var matchRecord = m.matchId ? (t.matches || []).find(function(x){ return x.id === m.matchId; }) : null;
+        html += '<div class="bracket-match ' + (playable ? "" : "disabled") + '" data-lb-round="' + ri + '" data-lb-match="' + mi + '" data-playable="' + playable + '">';
+        html += '<div class="bracket-slot ' + (m.winner === m.a && m.a !== null ? "winner" : "") + '"><span>' + entryNameByPairId(t, m.a) + '</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreA + '</span>' : '') + '</div>';
+        html += '<div class="bracket-divider"></div>';
+        html += '<div class="bracket-slot ' + (m.winner === m.b && m.b !== null ? "winner" : "") + '"><span>' + entryNameByPairId(t, m.b) + '</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreB + '</span>' : '') + '</div>';
+        if(playable) html += '<div class="bracket-tap-hint">Tap to score this match</div>';
+        else if(m.bye) html += '<div class="bracket-tap-hint" style="color:var(--ink-faint);">Bye</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    var canGenLb = deLastLbRoundComplete(t) && (deLbSurvivorsFromLastRound(t).length + deCollectFreshWbLosers(t).length) >= 2 && !lbChamp;
+    if(!gf) html += '<button class="btn btn-secondary btn-sm" id="btn-gen-lb-round" style="margin-bottom:18px;" ' + (canGenLb ? "" : "disabled") + '>Generate next losers-bracket round</button>';
+
+    // Grand final
+    html += '<p class="section-label" style="margin-top:22px;">Grand final</p>';
+    if(gf){
+      var played = gf.winner !== null && gf.winner !== undefined;
+      var matchRecord = gf.matchId ? (t.matches || []).find(function(x){ return x.id === gf.matchId; }) : null;
+      var playable = !played;
+      html += '<div class="bracket-match ' + (playable ? "" : "disabled") + '" data-gf="1" data-playable="' + playable + '">';
+      html += '<div class="bracket-slot ' + (gf.winner === gf.a ? "winner" : "") + '"><span>' + entryNameByPairId(t, gf.a) + ' (WB)</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreA + '</span>' : '') + '</div>';
+      html += '<div class="bracket-divider"></div>';
+      html += '<div class="bracket-slot ' + (gf.winner === gf.b ? "winner" : "") + '"><span>' + entryNameByPairId(t, gf.b) + ' (LB)</span>' + (played && matchRecord ? '<span class="slot-score">' + matchRecord.scoreB + '</span>' : '') + '</div>';
+      if(playable) html += '<div class="bracket-tap-hint">Tap to score this match</div>';
+      html += '</div>';
+    } else if(wbChamp && lbChamp){
+      html += '<button class="btn btn-primary btn-sm" id="btn-gen-gf">Set up grand final</button>';
+    } else {
+      html += '<p style="font-size:12.5px; color:var(--ink-faint);">Waits for a winners-bracket champion and a losers-bracket champion.</p>';
+    }
+
+    body.innerHTML = html;
+
+    document.getElementById("btn-reseed-de").addEventListener("click", function(){
+      showConfirm("Redo seeding?", "This clears the whole bracket (winners and losers) and any scores tied to it. Completed games stay in your match history.", "Redo seeding", true, async function(){
+        var list = await loadJSON(TOURNAMENTS_KEY, []);
+        var tt = list.find(function(x){ return x.id === t.id; });
+        tt.bracket = null; tt.doubleElim = null;
+        await saveJSON(TOURNAMENTS_KEY, list);
+        renderTournamentDetail(t.id);
+      });
+    });
+
+    var genLbBtn = document.getElementById("btn-gen-lb-round");
+    if(genLbBtn) genLbBtn.addEventListener("click", async function(){
+      var pool = deLbSurvivorsFromLastRound(t).concat(deCollectFreshWbLosers(t));
+      if(pool.length < 2){ showToast("Not enough players to pair yet"); return; }
+      var newRound = [];
+      for(var i = 0; i < pool.length; i += 2){
+        var bye = (i + 1 >= pool.length);
+        newRound.push({ a: pool[i], b: bye ? null : pool[i + 1], winner: bye ? pool[i] : null, matchId: null, bye: bye });
+      }
+      var list = await loadJSON(TOURNAMENTS_KEY, []);
+      var tt = list.find(function(x){ return x.id === t.id; });
+      tt.doubleElim.lbRounds.push(newRound);
+      await saveJSON(TOURNAMENTS_KEY, list);
+      renderTournamentDetail(t.id);
+    });
+
+    var genGfBtn = document.getElementById("btn-gen-gf");
+    if(genGfBtn) genGfBtn.addEventListener("click", async function(){
+      var list = await loadJSON(TOURNAMENTS_KEY, []);
+      var tt = list.find(function(x){ return x.id === t.id; });
+      tt.doubleElim.grandFinal = { a: deWbChampion(tt), b: deLbChampion(tt), winner: null, matchId: null };
+      await saveJSON(TOURNAMENTS_KEY, list);
+      renderTournamentDetail(t.id);
+    });
+
+    function startDeMatch(pairIdA, pairIdB, deRef){
+      var entryA = entries.find(function(x){ return x.pairId === pairIdA; });
+      var entryB = entries.find(function(x){ return x.pairId === pairIdB; });
+      if(!entryA || !entryB){ showToast("One of these pairs was removed \u2014 redo seeding"); return; }
+      loadJSON(TOURNAMENTS_KEY, []).then(function(list){
+        var tt = list.find(function(x){ return x.id === t.id; });
+        var match = buildMatchRecord(tt, entryA.teamId, entryA.pairId, entryB.teamId, entryB.pairId, "", "");
+        if(!match) return;
+        match.deRef = deRef;
+        tt.matches = tt.matches || [];
+        tt.matches.push(match);
+        if(deRef.kind === "wb") tt.bracket.rounds[deRef.round][deRef.slot].matchId = match.id;
+        else if(deRef.kind === "lb") tt.doubleElim.lbRounds[deRef.round][deRef.slot].matchId = match.id;
+        else if(deRef.kind === "gf") tt.doubleElim.grandFinal.matchId = match.id;
+        saveJSON(TOURNAMENTS_KEY, list).then(function(){
+          startGame(
+            { name: entryA.pair.players.join(" & "), players: entryA.pair.players },
+            { name: entryB.pair.players.join(" & "), players: entryB.pair.players },
+            t.mode, t.target, t.winBy2,
+            { type: "tournament", tournamentId: t.id, matchId: match.id, series: makeSeriesContext(t) }
+          );
+        });
+      });
+    }
+
+    body.querySelectorAll('[data-wb-round][data-playable="true"]').forEach(function(el){
+      el.addEventListener("click", function(){
+        var ri = parseInt(el.dataset.wbRound, 10), mi = parseInt(el.dataset.wbMatch, 10);
+        var slot = t.bracket.rounds[ri][mi];
+        startDeMatch(t.seedOrder[slot.a], t.seedOrder[slot.b], { kind: "wb", round: ri, slot: mi });
+      });
+    });
+    body.querySelectorAll('[data-lb-round][data-playable="true"]').forEach(function(el){
+      el.addEventListener("click", function(){
+        var ri = parseInt(el.dataset.lbRound, 10), mi = parseInt(el.dataset.lbMatch, 10);
+        var slot = t.doubleElim.lbRounds[ri][mi];
+        startDeMatch(slot.a, slot.b, { kind: "lb", round: ri, slot: mi });
+      });
+    });
+    body.querySelectorAll('[data-gf][data-playable="true"]').forEach(function(el){
+      el.addEventListener("click", function(){
+        startDeMatch(t.doubleElim.grandFinal.a, t.doubleElim.grandFinal.b, { kind: "gf" });
+      });
+    });
+  }
+
+  function entryNameByPairId(t, pairId){
+    if(pairId === null || pairId === undefined) return "TBD";
+    for(var i = 0; i < t.teams.length; i++){
+      var pairs = t.teams[i].pairs || [];
+      for(var j = 0; j < pairs.length; j++){
+        if(pairs[j].id === pairId) return pairLabel(pairs[j]);
+      }
+    }
+    return "TBD";
   }
 
   function matchCardHtml(t, m, isUpcoming){
@@ -3232,6 +3614,10 @@
         scoreOrHint +
         '<span class="matchup-team' + (!aWin && !isUpcoming ? " winner" : "") + '" style="text-align:right;">' + m.teamBName + ' \u2014 ' + m.teamBPairLabel + '</span>' +
       '</div>';
+    if(!isUpcoming && m.seriesScores && m.seriesScores.length){
+      var gamesStr = m.seriesScores.map(function(g){ return g.a + "\u2013" + g.b; }).join(", ");
+      html += '<div class="rr-top-scorer">Games: ' + gamesStr + '</div>';
+    }
     if(!isUpcoming && m.serverStats && m.serverStats.length){
       html += '<div class="rr-top-scorer">Top scorer: ' + topScorerLine(m.serverStats) + '</div>';
     }
