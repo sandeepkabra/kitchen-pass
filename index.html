@@ -708,6 +708,11 @@
       </div>
     </div>
     <p class="page-sub" id="tournaments-profile-line">Create a tournament or series, register teams and pairs, schedule matches, and track the serve leaderboard.</p>
+    <div class="btn-row" style="margin-bottom:18px;">
+      <button class="btn btn-secondary btn-sm" id="btn-download-template" style="flex:1;">📅 Download template</button>
+      <button class="btn btn-secondary btn-sm" id="btn-import-excel" style="flex:1;">📤 Import from Excel</button>
+    </div>
+    <input type="file" id="excel-import-input" accept=".xlsx,.xls" style="display:none;">
     <div id="tournaments-list"></div>
 
     <div class="modal-overlay" id="modal-new-tournament">
@@ -1032,6 +1037,7 @@
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-functions-compat.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
 (function(){
   "use strict";
@@ -2692,6 +2698,166 @@
     renderTournamentDetail(t.id);
     showScreen("screen-tournament-detail");
   });
+
+  /* ---------------------------------------------------------------- */
+  /* Excel template download + import                                   */
+  /* ---------------------------------------------------------------- */
+  var STRUCTURE_LABELS = {
+    "manual": "Manual", "round-robin": "Round Robin", "pools-playoffs": "Pools + Playoffs",
+    "single-elim": "Bracket", "double-elim": "Double Elim"
+  };
+  var MATCHFORMAT_LABELS = { "single": "Single Game", "best3": "Best of 3", "best5": "Best of 5" };
+
+  function normalizeChoice(raw, aliasMap, fallback){
+    if(raw === undefined || raw === null) return fallback;
+    var s = String(raw).trim().toLowerCase();
+    for(var key in aliasMap){
+      if(aliasMap[key].indexOf(s) !== -1) return key;
+    }
+    return fallback;
+  }
+
+  document.getElementById("btn-download-template").addEventListener("click", async function(){
+    if(typeof XLSX === "undefined"){ showToast("Excel library didn't load \u2014 check your connection and try again"); return; }
+    var profile = await getProfile();
+    var infoSheet = XLSX.utils.aoa_to_sheet([
+      ["Name","City","Ground","Organizer Name","Organizer Phone","Organizer Email","Start Date (YYYY-MM-DD)","End Date (YYYY-MM-DD)","Format (Doubles/Singles)","Structure (Manual/Round Robin/Pools + Playoffs/Bracket/Double Elim)","Match Format (Single Game/Best of 3/Best of 5)","Points To Win","Win By 2 (Yes/No)","Qualifiers Per Pool (only for Pools + Playoffs)"],
+      ["Saturday Slam","Pune","Baner Sports Arena",profile.name || "Your name","9876543210","you@example.com","2026-09-25","2026-09-26","Doubles","Round Robin","Single Game",15,"Yes",2]
+    ]);
+    var teamsSheet = XLSX.utils.aoa_to_sheet([
+      ["Team Name","Group (optional)","Player 1","Player 2 (leave blank for singles)"],
+      ["Thunder Squad","Group A","Priya Shah","Raj Mehta"],
+      ["Thunder Squad","Group A","Amit Kulkarni","Sandeep Kabra"],
+      ["Net Ninjas","Group B","Neha Joshi","Karan Patel"],
+      ["Smash Bros","Group B","Vikram Rao","Anita Desai"]
+    ]);
+    var wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, infoSheet, "Tournament Info");
+    XLSX.utils.book_append_sheet(wb, teamsSheet, "Teams & Pairs");
+    XLSX.writeFile(wb, "kitchen-pass-tournament-template.xlsx");
+  });
+
+  document.getElementById("btn-import-excel").addEventListener("click", function(){
+    document.getElementById("excel-import-input").click();
+  });
+
+  document.getElementById("excel-import-input").addEventListener("change", async function(e){
+    var file = e.target.files[0];
+    e.target.value = "";
+    if(!file) return;
+    if(typeof XLSX === "undefined"){ showToast("Excel library didn't load \u2014 check your connection and try again"); return; }
+
+    try{
+      var buf = await file.arrayBuffer();
+      var wb = XLSX.read(buf, { type: "array", cellDates: false });
+
+      var infoSheetName = wb.SheetNames.find(function(n){ return /tournament\s*info/i.test(n); }) || wb.SheetNames[0];
+      var teamsSheetName = wb.SheetNames.find(function(n){ return /team/i.test(n); }) || wb.SheetNames[1] || wb.SheetNames[0];
+
+      var infoRows = XLSX.utils.sheet_to_json(wb.Sheets[infoSheetName], { defval: "" });
+      var teamRows = XLSX.utils.sheet_to_json(wb.Sheets[teamsSheetName], { defval: "" });
+
+      function getField(row, patterns){
+        var keys = Object.keys(row);
+        for(var i = 0; i < patterns.length; i++){
+          var key = keys.find(function(k){ return patterns[i].test(k); });
+          if(key !== undefined && String(row[key]).trim() !== "") return row[key];
+        }
+        return "";
+      }
+
+      var info = infoRows[0] || {};
+      var name = String(getField(info, [/^name$/i]) || "Imported tournament").trim();
+      var mode = normalizeChoice(getField(info, [/format/i]), { doubles: ["doubles","double"], singles: ["singles","single"] }, "doubles");
+      var structure = normalizeChoice(getField(info, [/structure/i]), {
+        "manual": ["manual"],
+        "round-robin": ["round robin","roundrobin","round-robin"],
+        "pools-playoffs": ["pools","playoff"],
+        "single-elim": ["bracket","single elim","elimination"],
+        "double-elim": ["double elim","double-elim"]
+      }, "manual");
+      var matchFormat = normalizeChoice(getField(info, [/match\s*format/i]), {
+        "single": ["single game","single","1"],
+        "best3": ["best of 3","best3","3"],
+        "best5": ["best of 5","best5","5"]
+      }, "single");
+      var targetRaw = getField(info, [/points/i]);
+      var target = parseInt(targetRaw, 10);
+      if(!target || target < 3) target = 15;
+      var winBy2Raw = String(getField(info, [/win\s*by/i]) || "yes").trim().toLowerCase();
+      var winBy2 = !(winBy2Raw === "no" || winBy2Raw === "false" || winBy2Raw === "0");
+      var qualifyRaw = parseInt(getField(info, [/qualifier/i]), 10);
+      var qualifyPerPool = qualifyRaw > 0 ? qualifyRaw : 2;
+
+      var teamsMap = {};
+      var teamOrder = [];
+      var skippedRows = 0;
+      teamRows.forEach(function(row){
+        var teamName = String(getField(row, [/team\s*name/i]) || "").trim();
+        var p1 = String(getField(row, [/player\s*1/i]) || "").trim();
+        var p2 = String(getField(row, [/player\s*2/i]) || "").trim();
+        var group = String(getField(row, [/group/i]) || "").trim();
+        if(!teamName || !p1){ skippedRows++; return; }
+        if(!teamsMap[teamName]){
+          teamsMap[teamName] = { id: uid(), name: teamName, group: group, pairs: [] };
+          teamOrder.push(teamName);
+        }
+        var players = mode === "doubles" ? [p1, p2 || "Partner"] : [p1];
+        teamsMap[teamName].pairs.push({ id: uid(), players: players });
+      });
+      var teams = teamOrder.map(function(n){ return teamsMap[n]; });
+
+      if(teams.length === 0){
+        showToast("No valid rows found in the Teams & Pairs sheet \u2014 make sure Team Name and Player 1 are filled in");
+        return;
+      }
+
+      var t = {
+        id: uid(), name: name,
+        city: String(getField(info, [/city/i]) || "").trim(),
+        ground: String(getField(info, [/ground/i]) || "").trim(),
+        organizerName: String(getField(info, [/organizer\s*name/i]) || "").trim(),
+        organizerPhone: String(getField(info, [/organizer\s*phone/i]) || "").trim(),
+        organizerEmail: String(getField(info, [/organizer\s*email/i]) || "").trim(),
+        startDate: normalizeExcelDate(getField(info, [/start\s*date/i])),
+        endDate: normalizeExcelDate(getField(info, [/end\s*date/i])),
+        mode: mode, target: target, winBy2: winBy2, matchFormat: matchFormat,
+        structure: structure, seedOrder: null, bracket: null, qualifyPerPool: qualifyPerPool,
+        createdAt: new Date().toISOString(),
+        teams: teams, matches: []
+      };
+
+      var list = await loadJSON(TOURNAMENTS_KEY, []);
+      list.push(t);
+      await saveJSON(TOURNAMENTS_KEY, list);
+
+      var pairCount = teams.reduce(function(sum, tm){ return sum + tm.pairs.length; }, 0);
+      showToast("Imported " + teams.length + " team(s), " + pairCount + " pair(s)" + (skippedRows ? " \u2014 " + skippedRows + " row(s) skipped (missing team/player name)" : ""));
+      currentTournamentId = t.id;
+      currentTdSubtab = "teams";
+      renderTournamentDetail(t.id);
+      showScreen("screen-tournament-detail");
+    }catch(err){
+      console.error("Excel import failed", err);
+      showToast("Couldn't read that file: " + (err && err.message ? err.message : "unknown error"));
+    }
+  });
+
+  function normalizeExcelDate(raw){
+    if(!raw && raw !== 0) return "";
+    if(typeof raw === "number"){
+      // Excel serial date
+      var d = new Date(Math.round((raw - 25569) * 86400 * 1000));
+      if(isNaN(d.getTime())) return "";
+      return d.toISOString().slice(0, 10);
+    }
+    var s = String(raw).trim();
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if(m) return m[0];
+    var d2 = new Date(s);
+    if(!isNaN(d2.getTime())) return d2.toISOString().slice(0, 10);
+    return "";
+  }
 
   function fmtShortDate(iso){
     if(!iso) return "";
