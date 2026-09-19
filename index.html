@@ -2711,8 +2711,12 @@
   function normalizeChoice(raw, aliasMap, fallback){
     if(raw === undefined || raw === null) return fallback;
     var s = String(raw).trim().toLowerCase();
+    if(!s) return fallback;
     for(var key in aliasMap){
-      if(aliasMap[key].indexOf(s) !== -1) return key;
+      var aliases = aliasMap[key];
+      for(var i = 0; i < aliases.length; i++){
+        if(s.indexOf(aliases[i]) !== -1) return key;
+      }
     }
     return fallback;
   }
@@ -2832,7 +2836,7 @@
       await saveJSON(TOURNAMENTS_KEY, list);
 
       var pairCount = teams.reduce(function(sum, tm){ return sum + tm.pairs.length; }, 0);
-      showToast("Imported " + teams.length + " team(s), " + pairCount + " pair(s)" + (skippedRows ? " \u2014 " + skippedRows + " row(s) skipped (missing team/player name)" : ""));
+      showToast("Imported " + teams.length + " team(s), " + pairCount + " pair(s) as " + STRUCTURE_LABELS[structure] + " \u00b7 " + (mode === "doubles" ? "Doubles" : "Singles") + " \u00b7 " + MATCHFORMAT_LABELS[matchFormat] + (skippedRows ? " \u2014 " + skippedRows + " row(s) skipped" : ""));
       currentTournamentId = t.id;
       currentTdSubtab = "teams";
       renderTournamentDetail(t.id);
@@ -2993,7 +2997,8 @@
       ["Organizer", t.organizerName || "\u2014"],
       ["Contact", [t.organizerPhone, t.organizerEmail].filter(Boolean).join(" \u00b7 ") || "\u2014"],
       ["Dates", dateRange],
-      ["Format", t.mode + " \u00b7 games to " + t.target]
+      ["Structure", STRUCTURE_LABELS[t.structure] || "Manual"],
+      ["Format", t.mode + " \u00b7 games to " + t.target + (t.matchFormat && t.matchFormat !== "single" ? " \u00b7 " + MATCHFORMAT_LABELS[t.matchFormat] : "")]
     ];
     document.getElementById("td-info").innerHTML = '<div class="td-info-card">' +
       infoRows.map(function(r){ return '<div class="td-info-row"><span class="td-info-label">' + r[0] + '</span><span class="td-info-value">' + r[1] + '</span></div>'; }).join("") +
