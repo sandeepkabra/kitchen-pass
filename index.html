@@ -858,6 +858,16 @@
         </div>
       </div>
     </div>
+
+    <div class="modal-overlay" id="modal-match-start">
+      <div class="modal-box">
+        <div class="modal-title">Who serves first?</div>
+        <div class="modal-body">You may not know the toss result ahead of time \u2014 pick whichever side is actually serving first to begin.</div>
+        <button class="btn btn-primary" id="ms-team-a" style="margin-bottom:10px;"></button>
+        <button class="btn btn-primary" id="ms-team-b" style="margin-bottom:10px;"></button>
+        <button class="btn btn-ghost" id="ms-cancel">Cancel</button>
+      </div>
+    </div>
   </section>
 
   <!-- ============ HISTORY ============ -->
@@ -3181,6 +3191,30 @@
     return out;
   }
 
+  var pendingMatchStart = null;
+  function openMatchStartConfirm(teamA, teamB, mode, target, winBy2, context){
+    pendingMatchStart = { teamA: teamA, teamB: teamB, mode: mode, target: target, winBy2: winBy2, context: context };
+    document.getElementById("ms-team-a").textContent = teamA.name + " serves first";
+    document.getElementById("ms-team-b").textContent = teamB.name + " serves first";
+    document.getElementById("modal-match-start").classList.add("active");
+  }
+  document.getElementById("ms-team-a").addEventListener("click", function(){
+    var p = pendingMatchStart; pendingMatchStart = null;
+    document.getElementById("modal-match-start").classList.remove("active");
+    if(!p) return;
+    startGame(p.teamA, p.teamB, p.mode, p.target, p.winBy2, p.context, "A");
+  });
+  document.getElementById("ms-team-b").addEventListener("click", function(){
+    var p = pendingMatchStart; pendingMatchStart = null;
+    document.getElementById("modal-match-start").classList.remove("active");
+    if(!p) return;
+    startGame(p.teamA, p.teamB, p.mode, p.target, p.winBy2, p.context, "B");
+  });
+  document.getElementById("ms-cancel").addEventListener("click", function(){
+    pendingMatchStart = null;
+    document.getElementById("modal-match-start").classList.remove("active");
+  });
+
   function makeSeriesContext(t){
     if(t.matchFormat === "best3") return { needWins: 2, gamesA: 0, gamesB: 0, gameScores: [] };
     if(t.matchFormat === "best5") return { needWins: 3, gamesA: 0, gamesB: 0, gameScores: [] };
@@ -3367,7 +3401,7 @@
     body.querySelectorAll("[data-start-match]").forEach(function(btn){
       btn.addEventListener("click", function(){
         var m = matches.find(function(x){ return x.id === btn.dataset.startMatch; });
-        startGame(
+        openMatchStartConfirm(
           { name: m.teamAPairLabel, players: m.teamAPlayers }, { name: m.teamBPairLabel, players: m.teamBPlayers },
           t.mode, t.target, t.winBy2,
           { type: "tournament", tournamentId: t.id, matchId: m.id, series: makeSeriesContext(t) }
@@ -3532,7 +3566,7 @@
         tt.bracket.rounds[ri][mi].matchId = match.id;
         await saveJSON(TOURNAMENTS_KEY, list);
 
-        startGame(
+        openMatchStartConfirm(
           { name: entryA.pair.players.join(" & "), players: entryA.pair.players },
           { name: entryB.pair.players.join(" & "), players: entryB.pair.players },
           t.mode, t.target, t.winBy2,
@@ -3726,7 +3760,7 @@
         else if(deRef.kind === "lb") tt.doubleElim.lbRounds[deRef.round][deRef.slot].matchId = match.id;
         else if(deRef.kind === "gf") tt.doubleElim.grandFinal.matchId = match.id;
         saveJSON(TOURNAMENTS_KEY, list).then(function(){
-          startGame(
+          openMatchStartConfirm(
             { name: entryA.pair.players.join(" & "), players: entryA.pair.players },
             { name: entryB.pair.players.join(" & "), players: entryB.pair.players },
             t.mode, t.target, t.winBy2,
