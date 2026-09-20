@@ -3337,34 +3337,50 @@
     if(t.structure === "pools-playoffs" && t.bracket){ renderTdBracket(t); return; }
     var body = document.getElementById("td-body");
     var matches = t.matches || [];
-    var upcoming = matches.filter(function(m){ return m.status === "upcoming"; }).sort(function(a,b){ return (a.datetime||"").localeCompare(b.datetime||""); });
-    var completed = matches.filter(function(m){ return m.status === "completed"; }).sort(function(a,b){ return (b.datetime||"").localeCompare(a.datetime||""); });
+    var leagueMatches = matches.filter(function(m){ return !m.stage; });
+    var knockoutMatches = matches.filter(function(m){ return m.stage; });
+    var stageOrder = { "QF": 0, "SF": 1, "F": 2 };
+    knockoutMatches.sort(function(a, b){ return stageOrder[a.stage] - stageOrder[b.stage] || (a.datetime||"").localeCompare(b.datetime||""); });
+    var upcoming = leagueMatches.filter(function(m){ return m.status === "upcoming"; }).sort(function(a,b){ return (a.datetime||"").localeCompare(b.datetime||""); });
+    var completed = leagueMatches.filter(function(m){ return m.status === "completed"; }).sort(function(a,b){ return (b.datetime||"").localeCompare(a.datetime||""); });
 
     var canSchedule = allPairs(t).length >= 2;
     var html = "";
-    if((t.structure === "round-robin" || t.structure === "pools-playoffs") && matches.length === 0){
+    if((t.structure === "round-robin" || t.structure === "pools-playoffs") && leagueMatches.length === 0){
       var label = t.structure === "pools-playoffs" ? "Generate pool fixtures" : "Generate round-robin fixtures";
       html += '<button class="btn btn-primary btn-sm" id="btn-gen-rr" style="margin-bottom:10px;" ' + (canSchedule ? "" : "disabled") + '>' + label + '</button>';
       html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:-4px 0 16px;">Creates every pairing once' + (t.structure === "pools-playoffs" ? " within each group/pool" : " (within groups, if you\u2019ve tagged teams)") + '. You can still add matches manually below.</p>';
     }
-    if(t.structure === "pools-playoffs" && matches.length > 0){
-      var allPoolDone = matches.every(function(m){ return m.status === "completed"; });
+    if(t.structure === "pools-playoffs" && leagueMatches.length > 0){
+      var allPoolDone = leagueMatches.every(function(m){ return m.status === "completed"; });
       if(allPoolDone){
         html += '<div class="mystats-card" style="padding:16px;"><div class="mystats-title">Pool play complete</div>' +
-          '<p style="font-size:13px; color:var(--ink-soft); margin:4px 0 12px;">Top ' + (t.qualifyPerPool || 2) + ' pair(s) per pool advance to the playoff bracket.</p>' +
-          '<button class="btn btn-primary btn-sm" id="btn-gen-playoffs">Generate playoffs</button></div>';
+          '<p style="font-size:13px; color:var(--ink-soft); margin:4px 0 12px;">Auto-seed the top ' + (t.qualifyPerPool || 2) + ' pair(s) per pool into a bracket, or scroll down to add Quarterfinal / Semifinal / Final matches yourself.</p>' +
+          '<button class="btn btn-primary btn-sm" id="btn-gen-playoffs">Generate playoffs automatically</button></div>';
       } else {
         html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:0 0 16px;">Finish every pool match to unlock the playoff bracket.</p>';
+      }
+    }
+    if(t.structure === "round-robin" && leagueMatches.length > 0){
+      var allLeagueDone = leagueMatches.every(function(m){ return m.status === "completed"; });
+      if(allLeagueDone && knockoutMatches.length === 0){
+        html += '<div class="mystats-card" style="padding:16px;"><div class="mystats-title">\ud83c\udfc6 League matches complete</div>' +
+          '<p style="font-size:13px; color:var(--ink-soft); margin:4px 0 12px;">Check the Points tab for standings, then schedule the Quarterfinal, Semifinal, and Final yourself \u2014 tap "+ Schedule match" below and choose a Stage.</p></div>';
       }
     }
     html += '<button class="btn btn-secondary btn-sm" id="btn-add-match" style="margin-bottom:16px;" ' + (canSchedule ? "" : "disabled") + '>+ Schedule match</button>';
     if(!canSchedule) html += '<p style="font-size:12.5px; color:var(--ink-faint); margin:-10px 0 16px;">Add at least 2 pairs across your teams first.</p>';
 
+    if(knockoutMatches.length){
+      html += '<p class="section-label">Knockout stage</p>';
+      knockoutMatches.forEach(function(m){ html += matchCardHtml(t, m, m.status === "upcoming"); });
+    }
+
     if(matches.length === 0){
       html += '<div class="empty-state"><p>No matches scheduled yet.</p></div>';
     }
     if(upcoming.length){
-      html += '<p class="section-label">Upcoming</p>';
+      html += '<p class="section-label" style="margin-top:18px;">Upcoming</p>';
       upcoming.forEach(function(m){ html += matchCardHtml(t, m, true); });
     }
     if(completed.length){
@@ -3802,12 +3818,14 @@
     return "TBD";
   }
 
+  var STAGE_LABELS = { "QF": "Quarterfinal", "SF": "Semifinal", "F": "Final" };
+
   function matchCardHtml(t, m, isUpcoming){
     var when = fmtScheduleDate(m.datetime) + (m.court ? " \u00b7 " + m.court : "");
     var aWin = m.winner === "A";
     var scoreOrHint = isUpcoming ? '' : '<span class="matchup-score">' + m.scoreA + '\u2013' + m.scoreB + '</span>';
     var html = '<div class="match-card">' +
-      '<div class="match-card-top"><span class="meta-date">' + when + '</span>' +
+      '<div class="match-card-top"><span class="meta-date">' + when + (m.stage ? ' <span class="badge coral" style="margin-left:6px;">' + STAGE_LABELS[m.stage] + '</span>' : '') + '</span>' +
         '<div class="match-card-actions">' +
         (isUpcoming ?
           '<button class="icon-btn" data-edit-match="' + m.id + '" aria-label="Edit match"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>' +
@@ -3841,6 +3859,13 @@
       '<p class="section-label">Team / pair B</p>' +
       '<div class="form-row-2" style="margin-bottom:10px;"><select class="mf-team-b mf-select"></select><select class="mf-pair-b mf-select"></select></div>' +
       '<div class="serve-hint serve-hint-active mf-serve-hint" style="margin:0 0 12px;"></div>' +
+      '<p class="section-label">Stage (optional)</p>' +
+      '<select class="mf-stage mf-select" style="margin-bottom:10px;">' +
+        '<option value="">Regular match</option>' +
+        '<option value="QF">Quarterfinal</option>' +
+        '<option value="SF">Semifinal</option>' +
+        '<option value="F">Final</option>' +
+      '</select>' +
       '<div class="form-row-2" style="margin-bottom:10px;"><input type="date" class="mf-date"><input type="time" class="mf-time"></div>' +
       '<div class="field-group" style="margin-bottom:6px;"><input type="text" class="mf-court" placeholder="Court / ground (optional)" maxlength="40"></div>' +
       '<button type="button" class="text-link mf-row-remove" data-remove-match-row="' + rowIdx + '" style="display:none; margin-bottom:8px;">Remove this match</button>' +
@@ -3917,6 +3942,7 @@
       rowEl.querySelector(".mf-date").value = parts[0] || "";
       rowEl.querySelector(".mf-time").value = parts[1] || "";
       rowEl.querySelector(".mf-court").value = match.court || "";
+      rowEl.querySelector(".mf-stage").value = match.stage || "";
       rowEl.querySelector(".mf-pair-a").dispatchEvent(new Event("change"));
     }
     refreshMatchRowRemoveButtons();
@@ -3959,13 +3985,14 @@
       if(!fa || !fb) return;
       var date = rowEl.querySelector(".mf-date").value, time = rowEl.querySelector(".mf-time").value;
       var court = rowEl.querySelector(".mf-court").value.trim();
+      var stage = rowEl.querySelector(".mf-stage").value;
       newMatches.push({
         teamAId: teamAId, pairAId: pairAId, teamBId: teamBId, pairBId: pairBId,
         teamAName: fa.team.name, teamBName: fb.team.name,
         teamAPairLabel: pairLabel(fa.pair), teamBPairLabel: pairLabel(fb.pair),
         teamAPlayers: fa.pair.players, teamBPlayers: fb.pair.players,
         datetime: (date || "") + (time ? "T" + time : ""),
-        court: court
+        court: court, stage: stage
       });
     });
     if(skipped) showToast("Skipped a row \u2014 pick two different pairs");
