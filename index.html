@@ -2285,6 +2285,7 @@
     }
   }
 
+  var editingPlayerId = null, pendingPhoto = null;
   function openPlayerForm(player){
     editingPlayerId = player ? player.id : null;
     pendingPhoto = player ? player.photo : null;
